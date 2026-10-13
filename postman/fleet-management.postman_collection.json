@@ -1,0 +1,411 @@
+{
+  "info": {
+    "name": "Fleet Management API",
+    "description": "Transjakarta fleet management backend.\n\n1. Run **Auth / Get Access Token** first (it stores `access_token` in the collection variables).\n2. All `/vehicles/...` requests inherit Bearer auth from the collection.\n\nIf the token is missing or expired, the collection pre-request script fetches a new one automatically.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Auto-fetch an access token when missing or expired (skipped for public requests).",
+          "const url = pm.request.url.toString();",
+          "if (url.includes('/oauth/token') || url.includes('/healthz') || pm.request.auth && pm.request.auth.type === 'noauth') { return; }",
+          "const token = pm.collectionVariables.get('access_token');",
+          "const expiresAt = Number(pm.collectionVariables.get('access_token_expires_at') || 0);",
+          "if (token && Date.now() < expiresAt - 10000) { return; }",
+          "pm.sendRequest({",
+          "  url: pm.collectionVariables.get('base_url') + '/oauth/token',",
+          "  method: 'POST',",
+          "  header: { 'Content-Type': 'application/x-www-form-urlencoded' },",
+          "  body: { mode: 'urlencoded', urlencoded: [",
+          "    { key: 'grant_type', value: 'client_credentials' },",
+          "    { key: 'client_id', value: pm.collectionVariables.get('client_id') },",
+          "    { key: 'client_secret', value: pm.collectionVariables.get('client_secret') }",
+          "  ]}",
+          "}, (err, res) => {",
+          "  if (err || res.code !== 200) { console.error('token request failed', err || res.text()); return; }",
+          "  const body = res.json();",
+          "  pm.collectionVariables.set('access_token', body.access_token);",
+          "  pm.collectionVariables.set('access_token_expires_at', Date.now() + body.expires_in * 1000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "client_id",
+      "value": "fleet-client"
+    },
+    {
+      "key": "client_secret",
+      "value": "fleet-secret"
+    },
+    {
+      "key": "vehicle_id",
+      "value": "B1234XYZ"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "access_token_expires_at",
+      "value": "0"
+    },
+    {
+      "key": "start",
+      "value": ""
+    },
+    {
+      "key": "end",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/healthz",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "healthz"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Get Access Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns bearer token', () => {",
+                  "  pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.token_type).to.eql('Bearer');",
+                  "});",
+                  "pm.collectionVariables.set('access_token', body.access_token);",
+                  "pm.collectionVariables.set('access_token_expires_at', Date.now() + body.expires_in * 1000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "{{client_secret}}"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/oauth/token",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "oauth",
+                "token"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Vehicles",
+      "item": [
+        {
+          "name": "List Vehicles",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Latest Location",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('matches spec format', () => {",
+                  "  pm.expect(body).to.have.all.keys('vehicle_id', 'latitude', 'longitude', 'timestamp');",
+                  "  pm.expect(body.vehicle_id).to.eql(pm.collectionVariables.get('vehicle_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles/{{vehicle_id}}/location",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles",
+                "{{vehicle_id}}",
+                "location"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Location History (last 1 hour)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Default range: the last hour, so data from the mock publisher is returned.",
+                  "const now = Math.floor(Date.now() / 1000);",
+                  "pm.collectionVariables.set('start', now - 3600);",
+                  "pm.collectionVariables.set('end', now);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('returns an array within range', () => {",
+                  "  pm.expect(rows).to.be.an('array');",
+                  "  const start = Number(pm.collectionVariables.get('start'));",
+                  "  const end = Number(pm.collectionVariables.get('end'));",
+                  "  rows.forEach(r => pm.expect(r.timestamp).to.be.within(start, end));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles/{{vehicle_id}}/history?start={{start}}&end={{end}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles",
+                "{{vehicle_id}}",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "start",
+                  "value": "{{start}}"
+                },
+                {
+                  "key": "end",
+                  "value": "{{end}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Location History (spec example range)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles/{{vehicle_id}}/history?start=1715000000&end=1715009999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles",
+                "{{vehicle_id}}",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "start",
+                  "value": "1715000000"
+                },
+                {
+                  "key": "end",
+                  "value": "1715009999"
+                }
+              ]
+            },
+            "description": "Exact range from the spec. Returns [] unless data with those timestamps was published (the mock publisher uses the current time)."
+          }
+        },
+        {
+          "name": "Get Latest Location - unknown vehicle (404)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles/UNKNOWN123/location",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles",
+                "UNKNOWN123",
+                "location"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Location History - invalid range (400)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles/{{vehicle_id}}/history?start=1715009999&end=1715000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles",
+                "{{vehicle_id}}",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "start",
+                  "value": "1715009999"
+                },
+                {
+                  "key": "end",
+                  "value": "1715000000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Latest Location - no token (401)",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/vehicles/{{vehicle_id}}/location",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "vehicles",
+                "{{vehicle_id}}",
+                "location"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Geofence",
+      "item": [
+        {
+          "name": "Get Geofence Zone",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/geofence",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "geofence"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Recent Geofence Events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/geofence/events?limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "geofence",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

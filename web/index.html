@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Monitor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb;
+    --accent: #c8102e; --ok: #15803d; --warn: #b45309; --code: #f1f3f6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 17px; }
+  header h1 span { color: var(--accent); }
+  .status { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); } .dot.err { background: var(--accent); }
+  main { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 49px); }
+  aside { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; border-right: 1px solid var(--line); }
+  #map { height: 100%; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h2 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  code.ep { display: inline-block; font: 11px ui-monospace, Consolas, monospace; background: var(--code); padding: 2px 6px; border-radius: 4px; margin-bottom: 8px; word-break: break-all; }
+  .vehicles { display: flex; flex-direction: column; gap: 6px; }
+  .veh { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; background: #fff; text-align: left; font: inherit; color: inherit; }
+  .veh.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .veh .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .veh .id { font-weight: 600; }
+  .veh .meta { margin-left: auto; font-size: 12px; color: var(--muted); text-align: right; }
+  .kv { display: grid; grid-template-columns: 90px 1fr; gap: 2px 8px; font-variant-numeric: tabular-nums; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+  pre { margin: 8px 0 0; background: var(--code); padding: 8px; border-radius: 6px; font-size: 11px; overflow-x: auto; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .row label { width: 40px; color: var(--muted); }
+  input[type=datetime-local] { flex: 1; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
+  button.btn { font: inherit; padding: 5px 10px; border-radius: 4px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.btn:hover { filter: brightness(.96); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: #fff; }
+  .scroll { max-height: 200px; overflow-y: auto; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .events li { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .events li b { font-size: 13px; }
+  .events li.new { animation: flash 2.5s ease-out; }
+  @keyframes flash { from { background: #fde68a; } to { background: #fff; } }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #fee2e2; color: var(--accent); margin-left: 4px; }
+  #toast { position: fixed; right: 16px; bottom: 16px; background: var(--text); color: #fff; padding: 10px 14px; border-radius: 6px; opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 1000; }
+  #toast.show { opacity: .95; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; height: auto; } #map { height: 60vh; } aside { border-right: 0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fleet <span>Monitor</span></h1>
+  <span class="muted">MQTT → PostgreSQL → REST API · Geofence → RabbitMQ → Worker</span>
+  <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">connecting…</span></div>
+</header>
+
+<main>
+  <aside>
+    <section class="card">
+      <h2>Vehicles (live, every 2 s)</h2>
+      <code class="ep">GET /vehicles · GET /vehicles/{id}/location</code>
+      <div id="vehicles" class="vehicles"><span class="muted">Waiting for MQTT data…</span></div>
+    </section>
+
+    <section class="card">
+      <h2>Latest location</h2>
+      <code class="ep" id="latestEp">GET /vehicles/{id}/location</code>
+      <div id="latest" class="muted">Select a vehicle.</div>
+    </section>
+
+    <section class="card">
+      <h2>Location history</h2>
+      <code class="ep" id="historyEp">GET /vehicles/{id}/history?start=…&amp;end=…</code>
+      <div class="row"><label for="start">Start</label><input id="start" type="datetime-local" step="1"></div>
+      <div class="row"><label for="end">End</label><input id="end" type="datetime-local" step="1"></div>
+      <div class="row">
+        <button class="btn" data-range="60">Last 1 min</button>
+        <button class="btn" data-range="300">5 min</button>
+        <button class="btn" data-range="900">15 min</button>
+        <button class="btn primary" id="loadHistory">Load</button>
+      </div>
+      <div id="historyInfo" class="muted"></div>
+      <div class="scroll"><table id="historyTable" hidden>
+        <thead><tr><th>#</th><th>Time</th><th>Latitude</th><th>Longitude</th></tr></thead><tbody></tbody>
+      </table></div>
+    </section>
+
+    <section class="card">
+      <h2>Geofence events <span id="eventCount" class="badge">0</span></h2>
+      <code class="ep">fleet.events → geofence_alerts → worker · GET /geofence/events</code>
+      <div id="zoneInfo" class="muted" style="margin-bottom:8px"></div>
+      <ul id="events" class="events"><li class="muted" style="cursor:default">No events yet.</li></ul>
+    </section>
+  </aside>
+
+  <div id="map"></div>
+</main>
+<div id="toast"></div>
+
+<script>
+// Dev credentials from docker-compose.yml (OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET).
+const CLIENT_ID = "fleet-client", CLIENT_SECRET = "fleet-secret";
+const COLORS = ["#c8102e", "#2563eb", "#15803d", "#9333ea", "#ea580c", "#0891b2"];
+
+let token = null;
+let selected = null;
+let lastEventId = null;
+const markers = {};   // vehicle_id -> Leaflet marker
+const colorOf = {};   // vehicle_id -> color
+let historyLayer = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtTime = (unix) => new Date(unix * 1000).toLocaleString();
+const ago = (unix) => { const s = Math.max(0, Math.round(Date.now() / 1000 - unix)); return s < 60 ? s + "s ago" : Math.round(s / 60) + "m ago"; };
+
+const map = L.map("map").setView([-6.1765, 106.8287], 16);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
+}).addTo(map);
+
+function setStatus(ok, text) {
+  $("statusDot").className = "dot " + (ok ? "on" : "err");
+  $("statusText").textContent = text;
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+async function fetchToken() {
+  const res = await fetch("/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "client_credentials", client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
+  });
+  if (!res.ok) throw new Error("token request failed: " + res.status);
+  token = (await res.json()).access_token;
+}
+
+// api calls a protected endpoint, refreshing the token once on 401.
+async function api(path, retry = true) {
+  if (!token) await fetchToken();
+  const res = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+  if (res.status === 401 && retry) { token = null; return api(path, false); }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) { const err = new Error((body && body.message) || res.statusText); err.status = res.status; throw err; }
+  return body;
+}
+
+// ---- Vehicles (live) ----
+async function refreshVehicles() {
+  try {
+    const ids = await api("/vehicles");
+    const latest = await Promise.all(ids.map((id) => api("/vehicles/" + encodeURIComponent(id) + "/location").catch(() => null)));
+    setStatus(true, "live · " + ids.length + " vehicle(s)");
+    renderVehicles(latest.filter(Boolean));
+  } catch (e) {
+    setStatus(false, "API error: " + e.message);
+  }
+}
+
+function renderVehicles(locs) {
+  if (!locs.length) return;
+  if (!selected) selected = locs[0].vehicle_id;
+  locs.forEach((loc, i) => {
+    const id = loc.vehicle_id;
+    colorOf[id] = colorOf[id] || COLORS[Object.keys(colorOf).length % COLORS.length];
+    const ll = [loc.latitude, loc.longitude];
+    if (!markers[id]) {
+      markers[id] = L.circleMarker(ll, { radius: 9, color: "#fff", weight: 2, fillColor: colorOf[id], fillOpacity: 1 })
+        .addTo(map).bindTooltip(id, { permanent: true, direction: "right", offset: [8, 0] })
+        .on("click", () => select(id));
+    }
+    markers[id].setLatLng(ll);
+  });
+  $("vehicles").innerHTML = locs.map((l) => `
+    <button class="veh ${l.vehicle_id === selected ? "sel" : ""}" data-id="${esc(l.vehicle_id)}">
+      <span class="sw" style="background:${colorOf[l.vehicle_id]}"></span>
+      <span class="id">${esc(l.vehicle_id)}</span>
+      <span class="meta">${l.latitude.toFixed(5)}, ${l.longitude.toFixed(5)}<br>${ago(l.timestamp)}</span>
+    </button>`).join("");
+  const cur = locs.find((l) => l.vehicle_id === selected);
+  if (cur) renderLatest(cur);
+}
+
+$("vehicles").addEventListener("click", (e) => {
+  const btn = e.target.closest(".veh");
+  if (btn) select(btn.dataset.id);
+});
+
+function select(id) {
+  selected = id;
+  document.querySelectorAll(".veh").forEach((b) => b.classList.toggle("sel", b.dataset.id === id));
+  if (markers[id]) map.panTo(markers[id].getLatLng());
+  clearHistory();
+  refreshVehicles();
+}
+
+function renderLatest(loc) {
+  $("latestEp").textContent = "GET /vehicles/" + loc.vehicle_id + "/location";
+  $("latest").className = "";
+  $("latest").innerHTML = `
+    <dl class="kv">
+      <dt>Vehicle</dt><dd><b>${esc(loc.vehicle_id)}</b></dd>
+      <dt>Latitude</dt><dd>${loc.latitude}</dd>
+      <dt>Longitude</dt><dd>${loc.longitude}</dd>
+      <dt>Timestamp</dt><dd>${loc.timestamp} <span class="muted">(${esc(fmtTime(loc.timestamp))})</span></dd>
+    </dl>
+    <pre>${esc(JSON.stringify(loc, null, 2))}</pre>`;
+}
+
+// ---- History ----
+const toLocalInput = (unix) => {
+  const d = new Date(unix * 1000), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const fromLocalInput = (v) => Math.floor(new Date(v).getTime() / 1000);
+
+function setRange(seconds) {
+  const now = Math.floor(Date.now() / 1000);
+  $("start").value = toLocalInput(now - seconds);
+  $("end").value = toLocalInput(now);
+}
+
+document.querySelectorAll("[data-range]").forEach((b) =>
+  b.addEventListener("click", () => { setRange(Number(b.dataset.range)); loadHistory(); }));
+$("loadHistory").addEventListener("click", loadHistory);
+
+function clearHistory() {
+  if (historyLayer) { map.removeLayer(historyLayer); historyLayer = null; }
+  $("historyTable").hidden = true;
+  $("historyInfo").textContent = "";
+}
+
+async function loadHistory() {
+  if (!selected) { $("historyInfo").textContent = "Select a vehicle first."; return; }
+  const start = fromLocalInput($("start").value), end = fromLocalInput($("end").value);
+  if (!start || !end) { $("historyInfo").textContent = "Pick a start and end time."; return; }
+  const path = `/vehicles/${encodeURIComponent(selected)}/history?start=${start}&end=${end}`;
+  $("historyEp").textContent = "GET " + path;
+  clearHistory();
+  try {
+    const rows = await api(path);
+    $("historyInfo").textContent = `${rows.length} point(s) for ${selected}` + (rows.length ? "; drawn on the map" : "");
+    const tbody = $("historyTable").querySelector("tbody");
+    tbody.innerHTML = rows.map((r, i) =>
+      `<tr><td>${i + 1}</td><td>${esc(new Date(r.timestamp * 1000).toLocaleTimeString())}</td><td>${r.latitude}</td><td>${r.longitude}</td></tr>`).join("");
+    $("historyTable").hidden = rows.length === 0;
+    if (rows.length) {
+      const pts = rows.map((r) => [r.latitude, r.longitude]);
+      historyLayer = L.layerGroup([
+        L.polyline(pts, { color: colorOf[selected] || COLORS[0], weight: 4, opacity: .7 }),
+        ...pts.map((p) => L.circleMarker(p, { radius: 3, color: colorOf[selected] || COLORS[0], fillOpacity: 1 })),
+      ]).addTo(map);
+      map.fitBounds(L.latLngBounds(pts).pad(0.3));
+    }
+  } catch (e) {
+    $("historyInfo").textContent = "Error " + (e.status || "") + ": " + e.message;
+  }
+}
+
+// ---- Geofence ----
+async function loadZone() {
+  const z = await api("/geofence");
+  L.circle([z.latitude, z.longitude], { radius: z.radius_m, color: "#b45309", fillColor: "#f59e0b", fillOpacity: .25, weight: 2 })
+    .addTo(map).bindTooltip(`Geofence: ${z.name} (${z.radius_m} m)`);
+  $("zoneInfo").innerHTML = `Zone <b>${esc(z.name)}</b> · ${z.latitude}, ${z.longitude} · radius ${z.radius_m} m`;
+}
+
+async function refreshEvents() {
+  try {
+    const events = await api("/geofence/events?limit=20");
+    $("eventCount").textContent = events.length;
+    if (!events.length) return;
+    const isFirstLoad = lastEventId === null;
+    const prevId = lastEventId ?? 0;
+    lastEventId = events[0].id;
+    $("events").innerHTML = events.map((e) => `
+      <li class="${!isFirstLoad && e.id > prevId ? "new" : ""}" data-lat="${e.location.latitude}" data-lon="${e.location.longitude}">
+        <b>${esc(e.vehicle_id)}</b> · ${esc(e.event)}<br>
+        <span class="muted">${e.location.latitude}, ${e.location.longitude} · ${esc(fmtTime(e.timestamp))}</span>
+      </li>`).join("");
+    if (!isFirstLoad) events.filter((e) => e.id > prevId).forEach((e) => toast(`🚍 ${e.vehicle_id} entered the geofence`));
+  } catch (e) { /* status bar already shows API errors */ }
+}
+
+$("events").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-lat]");
+  if (li) map.flyTo([Number(li.dataset.lat), Number(li.dataset.lon)], 18);
+});
+
+// ---- Start ----
+(async function init() {
+  setRange(300);
+  try { await loadZone(); } catch (e) { setStatus(false, "API error: " + e.message); }
+  refreshVehicles();
+  refreshEvents();
+  setInterval(refreshVehicles, 2000);
+  setInterval(refreshEvents, 3000);
+})();
+</script>
+</body>
+</html>
